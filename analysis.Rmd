@@ -1,0 +1,396 @@
+---
+title: "NYU Langone Midbrain Glioma Project"
+author: "Ching-Tsung_Deron_Tsai"
+date: "2023/05/25"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Packages & functions
+
+```{r data, message=FALSE, warning=FALSE}
+library(tidyverse)  # data cleaning & ggplot
+library(finalfit)   # statistics in table
+library(knitr)      # table
+library(openxlsx)       # write excel
+suppressWarnings(library(kableExtra)) # tidy contingency table
+library(readxl)     # read raw data
+library(survival)   # survival model
+library(survminer)  # survival model
+log_rank_plot <- function(df,nm, tt=""){  # log rank plots
+  # param df: input data
+  # param full_name: name to labels in plot
+  # param gp_idx: the feature idx for grouping
+  # return pt: a log-rank test ggplot
+  mytheme <- theme_classic(base_size=14)+
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        legend.background = element_rect(fill = "transparent", colour = NULL))
+  full_name <- gsub("_", " ", nm)
+  df = df[!is.na(df[[nm]]),]
+  func <- as.formula(paste0("Surv(PFS,Progression)~",nm))
+  fit <- do.call(survfit, args = list(formula = func, data = df))
+  lbs <- paste0(full_name, "=", sort(unique(df[[nm]])))
+  if (tt!="") tt=paste("PFS Stratified By",gsub("_", " ", tt)) else tt=paste("PFS Stratified By",full_name)
+  pt <- ggsurvplot(fit, risk.table = F,conf.int = F,pval = TRUE, 
+                   title=tt,
+                   legend=c(0.8, 0.92),pval.coord=c(1, 0.3),
+                   legend.title="",legend.labs = lbs,
+                   xlab = "Years",break.time.by=60,xscale=12,
+                   xlim = c(0, max(df$PFS,na.rm=T)),
+                   ylab = "Percentage", break.y.by=0.2,
+                   palette = "aaas",
+                   ggtheme = mytheme)
+  pt$plot <- pt$plot + scale_y_continuous(labels = scales::percent)
+  return(pt)
+}
+df <- readRDS("clean_data.rds")
+```
+
+
+### Check special patients
+- Result from 2023.05
+```{r}
+# Patients who progressed after 10 years:
+df %>% filter(PFS>120 & Progression==1) %>%
+  mutate(`PFS in Year`=PFS/12) %>%
+  select(Id, MRI_Region, `PFS in Year`, Progression, PFS)
+# Id=37, 60, 67
+
+# Patient with Tegmentum involvement but in group A:
+df %>% filter(Tegmentum==1 & MRI_Region=='A') %>%
+  select(Id, MRI_Region) 
+# none
+```
+
+### Survival analysis
+
+```{r surv}
+# PFS of all data:
+fit <- survfit(formula=Surv(time=PFS, event=Progression) ~ 1, data=df)
+mytheme <- theme_classic(base_size=12)+
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14)) 
+# panel.grid.major.y = element_line( size=.1, color="black" )
+        
+p1 <- ggsurvplot(fit, conf.int = F, legend="none", palette ="gray40",
+                 title="Overall Progression Free Survival", # surv.plot.height = 1.2, 
+                 xlab = "Years", break.time.by=60, xscale=12,
+                 xlim = c(0, max(df$PFS,na.rm=T)),
+                 ylab = "Percentage", break.y.by=0.2,
+                 ggtheme = mytheme
+                 )
+p1$plot <- p1$plot + scale_y_continuous(labels = scales::percent)
+ggsave("plots_and_table/Overall_PFS.tiff", width = 7.5, height = 6)
+
+
+# group A & B:
+# change labels to group A/B
+df_region = df %>%
+  mutate(MRI_Region = if_else(MRI_Region=='A', 'Group A', 'Group B'))
+
+p2 <- log_rank_plot(df = df_region, nm = "MRI_Region")
+ggsave("plots_and_table/MRI_Region.tiff", width = 7.5, height = 6)
+arrange_ggsurvplots(list(p1,p2))
+# PFS of treatments 
+df_tm <- df %>% select(PFS, Progression, None, 
+                       Resection, Chemotherapy, Radiation)
+pt_tr <- lapply(4:6, function(i){   # 2:4 = idx of treatment
+  keep_idx <- which(ifelse(df_tm$None+df_tm[,i]>=1, T, F) )  # keep rows in one of the two gps
+  df_temp <- df_tm[keep_idx,]
+  df_temp$treatment <- ifelse(df_temp$None==1, ".None", 
+                              gsub("_", " ", colnames(df_tm)[i])) %>% factor()
+  levels(df_temp$treatment)[1] <- "None"
+  log_rank_plot(df=df_temp,nm="treatment", tt = colnames(df_tm)[i])
+})
+arrange_ggsurvplots(pt_tr)
+for (i in 1:3){
+  ggsave(filename =paste0("plots_and_table/", colnames(df_tm)[i+3],".tiff"),
+         plot = survminer:::.build_ggsurvplot(pt_tr[[i]]),
+         width = 7.5, height = 6
+
+  )
+}
+
+# PFS after initial treatment with resection/chemo/radiation
+fit_init <- survfit(formula=Surv(time=PFS_init, event=Progression) ~ 1, data=df)
+p1_init <- ggsurvplot(fit_init, conf.int = F, legend="none", palette ="gray40",
+                 title="Progression Free Survival after Initial Treatment", 
+                 xlab = "Years", break.time.by=60, xscale=12,
+                 xlim = c(0, max(df$PFS_init,na.rm=T)),
+                 ylab = "Percentage", break.y.by=0.2,
+                 ggtheme = mytheme
+                 )
+p1_init$plot <- p1_init$plot + scale_y_continuous(labels = scales::percent)
+ggsave("plots_and_table/PFS_init_treatment.tiff", width = 7.5, height = 6)
+table(df$MRI_Region[!is.na(df$PFS_init)]) 
+# > group A: 7, group B: 19 using new endpoint
+# didn't draw KM plot due to limited sample size
+```
+
+### Two way table:
+```{r table}
+# Define variable types based on the table structure
+continuous_vars <- c("Age", "Treatment_cnt", "PFS", "PFS_init", "Follow_up")
+categorical_vars <- c(
+  "Sex", "Hydrocephalus_at_presentation", "Incidental_finding", "Enhancement", "NF",
+  "Tectum", "Limited_tegmentum", "Tegmentum", "Thalamus", "Pons", "Cerebellum",
+  "Pilocytic_astrocytoma", "Other_low_grade_glioma", "High_grade_glioma", "None",
+  "VP_shunt_only", "ETV_only", "Resection", "Chemotherapy", "Radiation"
+)
+
+# Transform binary variables (assumed to be 0/1) to Yes/No factors
+binary_vars <- names(df)[sapply(df, function(x) all(unique(na.omit(x)) %in% c(0,1)))]
+df_t <- df %>%
+  mutate(across(all_of(binary_vars), ~factor(.x, levels = c(1,0), labels = c("Yes", "No"))))
+
+# Define the exact order of rows as per the original table
+table_order <- c(
+  "Age",
+  "Sex",
+  "Hydrocephalus_at_presentation",
+  "Incidental_finding",
+  "Enhancement",
+  "NF",
+  "Tectum",
+  "Limited_tegmentum",
+  "Tegmentum",
+  "Thalamus",
+  "Pons",
+  "Cerebellum",
+  "Pilocytic_astrocytoma",
+  "Other_low_grade_glioma",
+  "High_grade_glioma",
+  "None",
+  "VP_shunt_only",
+  "ETV_only",
+  "Resection",
+  "Chemotherapy",
+  "Radiation",
+  "Treatment_cnt",
+  "PFS",
+  "PFS_init",
+  "Follow_up"
+)
+
+# Generate summary statistics for each variable in the specified order
+summary_list <- list()
+for (var in table_order) {
+  if (var %in% continuous_vars) {
+    # Continuous variables: median and IQR
+    temp <- df_t %>%
+      summary_factorlist(
+        dependent = "MRI_Region",
+        explanatory = var,
+        p = TRUE,
+        add_dependent_label = FALSE,
+        total_col = FALSE,
+        cont = "median"
+      )
+    
+    # Calculate "All Tumors" column for continuous variables
+    val <- quantile(df_t[[var]], na.rm = TRUE)
+    all_val <- paste0(sprintf("%.1f", val[3]), " (", sprintf("%.1f", val[2]), "-", sprintf("%.1f", val[4]), ")")
+    temp$all <- all_val
+    
+  } else if (var == "Sex") {
+    # Special handling for Sex variable - show Female counts
+    temp <- df_t %>%
+      summary_factorlist(
+        dependent = "MRI_Region",
+        explanatory = var,
+        p = TRUE,
+        add_dependent_label = FALSE,
+        total_col = FALSE
+      )
+    # Filter for Female row
+    temp <- temp %>% filter(levels == "Female")
+    
+    # Calculate "All Tumors" column for Sex
+    cm <- table(df_t[[var]])
+    prop <- round(prop.table(cm), 3) * 100
+    all_val <- paste0(cm["Female"], " (", sprintf("%.1f", prop["Female"]), "%)")
+    temp$all <- all_val
+    
+  } else {
+    # Other categorical variables: decide between chi-square or Fisher's exact test
+    tab <- table(df_t$MRI_Region, df_t[[var]])
+    if (any(tab < 5)) {
+      temp <- df_t %>%
+        summary_factorlist(
+          dependent = "MRI_Region",
+          explanatory = var,
+          p = TRUE,
+          add_dependent_label = FALSE,
+          p_cat = "fisher",
+          total_col = FALSE
+        )
+    } else {
+      temp <- df_t %>%
+        summary_factorlist(
+          dependent = "MRI_Region",
+          explanatory = var,
+          p = TRUE,
+          add_dependent_label = FALSE,
+          total_col = FALSE
+        )
+    }
+    # Select only the "Yes" row for categorical variables
+    temp <- temp %>% filter(levels == "Yes")
+    
+    # Calculate "All Tumors" column for categorical variables
+    cm <- table(df_t[[var]])
+    prop <- round(prop.table(cm), 3) * 100
+    all_val <- paste0(cm["Yes"], " (", sprintf("%.1f", prop["Yes"]), "%)")
+    temp$all <- all_val
+  }
+  summary_list[[var]] <- temp
+}
+t_summary <- bind_rows(summary_list)
+
+# Create the "Number of Tumors" row
+total_tumors <- nrow(df_t)
+group_counts <- table(df_t$MRI_Region)
+group_props <- round(prop.table(group_counts), 3) * 100
+group_str <- paste0(group_counts, " (", group_props, "%)")
+number_row <- data.frame(
+  label = "Number of Tumors",
+  levels = "",
+  all = as.character(total_tumors),
+  A = group_str[1],
+  B = group_str[2],
+  p = ""
+)
+
+# Combine the "Number of Tumors" row with the summary table
+t_summary <- t_summary %>% select(-levels)
+final_table <- bind_rows(number_row %>% select(-levels), t_summary)
+
+# Adjust labels to match the original table
+final_table$label <- gsub("_", " ", final_table$label)
+final_table$label[final_table$label == "Sex"] <- "Female sex"
+final_table$label[final_table$label == "Age"] <- "Age (IQR)"
+final_table$label[final_table$label == "Treatment cnt"] <- "Median (IQR) Number of Treatments"
+final_table$label[final_table$label == "PFS"] <- "Median (IQR) Progression Free Survival in months"
+final_table$label[final_table$label == "PFS init"] <- "Median (IQR) Progression Free Survival after Initial Treatment in months"
+final_table$label[final_table$label == "Follow up"] <- "Median (IQR) Follow up in months"
+
+# Handle special cases for location variables
+# Rows 8-13 correspond to Tectum, Limited tegmentum, Tegmentum, Thalamus, Pons, Cerebellum
+final_table$p[8:13] <- "-"        # No p-values for location variables
+final_table$B[9] <- "-"           # Limited tegmentum: '-' for group B
+final_table$A[10:13] <- "-"       # Tegmentum to Cerebellum: '-' for group A
+
+# Rename columns to match the original table
+colnames(final_table) <- c("Patient and Tumor Characteristics", "All Tumors(%)", "group A(%)", "group B(%)", "p-value")
+
+# Generate the final table with groupings and footnote
+final_kable <- kable(final_table, align = "l", booktabs = FALSE) %>%
+  pack_rows("Location", 8, 13) %>%
+  pack_rows("Pathology", 14, 16) %>%
+  pack_rows("Treatment", 17, 23) %>%
+  pack_rows("Progression", 24, 26) %>%
+  kableExtra::footnote(
+    "<i>IQR</i> interquartile range. For categorical variables, the counts and percentages are reported.<br> For continuous variables, the median and interquartile range are reported.",
+    escape = FALSE,
+    general_title = "",
+    footnote_as_chunk = TRUE
+  ) %>%
+  kable_classic(full_width = FALSE, html_font = "arial")
+
+# Save and display the table
+save_kable(final_kable, file = 'plots_and_table/table.html', bs_theme = "flatly")
+final_kable
+```
+
+## Survival values
+
+* get the 1, 3, 5-yr survival of PFS, PFS after initial treatment, 
+  PFS of group A & B
+
+```{r}
+# calculate no. of PFS
+table(df$MRI_Region, df$Progression, exclude = F)
+#      0  1 <NA>
+# A    32  7    2
+# B    14 16    0
+# <NA>  2  1    1
+
+
+
+# N year survival
+fits = list(
+  PFS = survfit(formula=Surv(time=PFS, event=Progression) ~ 1, data=df),
+  init = survfit(formula=Surv(time=PFS_init, event=Progression) ~ 1, data=df),
+  MRI_region = survfit(formula=Surv(time=PFS, event=Progression) ~ MRI_Region, data=df)
+)
+cols = c('group', 'year', 'Survival', 'CI_lower', 'CI_upper')
+df_survival = data.frame(matrix(nrow = 4*4, ncol = length(cols)))
+colnames(df_survival)=cols
+j = 1
+for (i in c(1, 3, 5, 10)) {
+  # PFS
+  vals = summary(fits$PFS, times = i*12)
+  df_survival[j,] = c('PFS_Overall', i, vals$surv, vals$lower, vals$upper)
+  # init
+  vals = summary(fits$init, times = i*12)
+  df_survival[j+1,] = c('PFS_after_Init', i, vals$surv, vals$lower, vals$upper)
+  
+  # MRI region:
+  vals = summary(fits$MRI_region, times = i*12)
+  df_survival[j+2,] = c('PFS_Region_A', i, vals$surv[1], vals$lower[1], vals$upper[1])
+  df_survival[j+3,] = c('PFS_Region_B', i, vals$surv[2], vals$lower[2], vals$upper[2])
+  j = j + 4
+}
+
+
+df_survival = df_survival %>% 
+  mutate_at(vars('Survival', 'CI_lower', 'CI_upper'), \(x) round(100*as.numeric(x), 2)) %>%
+  mutate(
+    txt = paste(Survival, " (95% CI, " ,  CI_lower," to ", CI_upper,")", sep=""),
+    year = as.numeric(year),
+    group = factor(group, levels = c('PFS_Overall', 'PFS_after_Init', 'PFS_Region_A', 'PFS_Region_B'))
+    ) %>%
+  arrange(group, as.numeric(year))
+
+
+# save to excel sheet:
+write.xlsx(df_survival, "plots_and_table/Survival_summary.xlsx", 
+           sheetName = "N_year_survival", 
+           colNames = TRUE, 
+           rowNames = FALSE, 
+           overwrite = TRUE)
+
+
+# median survival:
+df_median = do.call(
+  rbind.data.frame, 
+  lapply(fits, surv_median)
+) %>%
+  select(!strata) %>%
+  mutate_at(vars("median", "lower", "upper"), 
+            \(x) if_else(is.na(x), 'not reached', as.character(round(x/12, 2)))) %>%
+  mutate(
+    txt = paste(median, " (95% CI, " ,  lower," to ", upper,")", sep="")
+  )
+row.names(df_median) = c("PFS_Overall", "PFS_after_Init", "PFS_Region_A", "PFS_Region_B")
+
+# save to excel sheet:
+wb <- loadWorkbook("plots_and_table/Survival_summary.xlsx")
+addWorksheet(wb, "Median_survival")
+writeData(wb, sheet = "Median_survival", x = df_median, 
+          colNames = TRUE, rowNames = TRUE)
+saveWorkbook(wb, "plots_and_table/Survival_summary.xlsx", overwrite = TRUE)
+```
+
+
+
+
+
+
+
+
+

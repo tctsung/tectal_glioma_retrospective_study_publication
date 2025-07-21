@@ -1,0 +1,172 @@
+---
+title: "NYU Langone Midbrain Glioma Project"
+author: "Ching-Tsung_Deron_Tsai"
+date: "2023/01/05"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Packages & functions
+
+```{r data, message=FALSE, warning=FALSE}
+library(tidyverse)  # data cleaning & ggplot
+library(readxl)     # read raw data
+firstup <- function(x) {  # change 1st letter to capital
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+```
+
+### Data cleaning
+
+Notes:
+
+- MRI region: turn ?, A?, B? to NA
+
+- age:
+  
+  - turn all into using year as unit
+  
+  - turn "?" to NA
+  
+  - "birth" turn to 0
+
+- PFS: remove non-numeric symbols
+
+- treatment: dummy coding
+
+- patients with unknown MRI regions are removed: 1, 17, 42, 72, 75, 79
+
+```{r data_cleaning}
+raw <- read_excel("data/Midbrain Glioma Data DS GJ MG NJ NEW (2)_20250629.xlsx")[1:78,] # 20250715
+# raw <- read_excel("data/Midbrain Glioma Data DS GJ MG NJ NEW_202306.xlsx")[1:78,] # 20230601
+# raw <- read_excel("data/Midbrain Glioma Data DS GJ MG NJ_202304.xlsx")[1:78,] # 20230424
+# raw <- read_excel("data/Midbrain Glioma Data DS GJ MG NJ_202301.xlsx")[1:77,]  # 202301 version
+# raw <- read_excel("data/Midbrain Glioma Data DS GJ MG NJ_202302.xlsx")[1:77,]
+
+# location_raw <- read_excel("data/Midbrain Glioma Data DS GJ MG NJ_202301.xlsx",sheet = 3)[1:78,4:9] %>% data.frame()
+location_raw <- read_excel("data/Midbrain Glioma Data DS GJ MG NJ NEW (2)_20250629.xlsx",sheet = 3)[1:78,c(1, 4:9, 11)] %>% data.frame()
+
+# progression and OS:
+progressed = ifelse(str_detect(raw$`Outcome new`, "3"),1,0)
+os = ifelse(str_detect(raw$`Outcome new`, "5"),1,0) # no one dead in this study
+# age:
+age <- raw$`Age at Dx`
+mos_idx <- which(str_detect(age, "mos"))  
+age[mos_idx] <- as.numeric(gsub("[^0-9]","",age[mos_idx]))/12 # standardize unit to month
+age = gsub("\\s*\\([^)]*\\)", "", age)   # drop desc btw brackets
+age[age=="birth"] <- 0 ; age[age=="?"] <- NA  # hard coding edge cases
+age <- as.numeric(age)
+# turn treatment from comma sep list to dummy cols:
+treatment <- sapply(0:5, function(i){
+  if (i %in% c(0,3:5)){  # 1 if contains
+    ifelse(str_detect(raw$`Treatment new`,as.character(i)),1L,0L)
+  } else{                # 1 if only
+    ifelse(raw$`Treatment new`==as.character(i),1L,0L)
+  }
+})
+colnames(treatment) <- c("None","ETV_only","VP_shunt_only",
+                         "resection","chemotherapy","radiation")
+
+# location:
+location <- location_raw[,1:7]
+colnames(location) <- c("id", "tectum", "limited_tegmentum", "tegmentum", "thalamus", "pons", "cerebellum")
+location[location=="x"] <- 1 ; location[is.na(location)] <- 0 ;  # empty=no, x=yes
+location[location=="?"] <- NA  # let ? be NA
+location <- apply(location,2,as.integer) %>% data.frame()
+location$id = as.character(location$id)
+
+# pathology (recode based on Nov. 08 2022 email from Dr. Mekka Garcia)
+pilocytic_astrocytoma <- as.integer(str_detect(raw$`Pathology summary`, "JPA"))
+other_low_grade_glioma <- str_detect(raw$`Pathology summary`, "low( |-)grade")
+other_low_grade_glioma[which(raw$ID %in% c(28,30,19,56,35,48))] <- 1L
+high_grade_glioma <- as.integer(raw$ID %in% c(47,50))
+# others:
+NF <- as.integer(raw$`NF?`)
+PFS <- as.integer(gsub("[^0-9]","",raw$`PFS new`))
+follow_up <- as.integer(gsub("[^0-9]","",raw$`OS new`))
+group <- ifelse(raw$`MRI region` %in% c("A?","?", "B?"), NA, raw$`MRI region`)
+enhancement <- factor(case_when((raw$enhancement=="1")~"Yes",
+                         (raw$enhancement=="0")~"No"), levels = c("Yes","No"))
+sex <- as.factor(ifelse(raw$`Gender (M=0, F=1)`==0, "Male","Female"))
+Hydrocephalus_at_presentation <- as.integer(str_detect(raw$`Clinical Presentation`,"3"))
+Incidental_finding <- as.integer(str_detect(raw$`Clinical Presentation`,"6"))
+# add no. of treatment & PFS after treatment according to 5/26.2023 email:
+treatments_raw <- gsub("[^1-9]","",raw$`Treatment new`) # keep only 1-9 (0 means no treatment)
+treatment_cnt <- nchar(treatments_raw)   # len()== no. of treatment; eg. 1234->4
+PFS_init <- as.integer(gsub("[^0-9]","",raw$`PFS after Treatment1 (chemo, radiation, resection)`)) 
+
+# clean data
+location_cols <- colnames(location)[2:7]
+clean <- data.frame(id = as.character(raw$ID),
+                    MRI_Region=group,
+                    age,
+                    sex,
+                    enhancement,
+                    NF = NF,
+                    Hydrocephalus_at_presentation,
+                    Incidental_finding,
+                    pilocytic_astrocytoma,
+                    other_low_grade_glioma,
+                    high_grade_glioma,
+                    data.frame(treatment),
+                    PFS,
+                    follow_up,
+                    progression=progressed,
+                    PFS_init,
+                    treatment_cnt
+                    ) %>%
+  left_join(location, by = "id") %>%
+  relocate(any_of(location_cols), .after = NF) %>% # reorder to match old code
+  filter(!is.na(MRI_Region))  # rm patients with unknown grouping
+
+
+
+
+colnames(clean) <- sapply(colnames(clean), firstup)
+clean$NF[clean$Id=="54"] <- 0   # exclude NF=1 for patient 54 according to Feb. 20, 2023 email
+saveRDS(clean,"clean_data.rds")
+```
+
+```{r}
+df <- readRDS("clean_data.rds")
+head(df,5)
+```
+
+
+
+```{r}
+## sanity check:
+table(df$Sex)
+
+table(df$NF, exclude=F)
+df %>% filter(Id==54) %>% .$NF
+
+table(df$MRI_Region)
+# >  A  B 
+# > 42 30 
+
+
+# missingness
+colSums(is.na(df))[colSums(is.na(df))!=0]
+
+# mismatch of MRI region labels:
+raw %>%
+  left_join(location_raw, by="ID") %>%
+  select(ID, MRI_region_sheet1 = `MRI region`, 
+         MRI_region_sheet3 = Group) %>%
+  filter(MRI_region_sheet1!= MRI_region_sheet3)
+```
+
+
+
+
+
+
+

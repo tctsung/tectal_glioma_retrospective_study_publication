@@ -1,0 +1,25 @@
+# Ignore input data
+data/
+clean_data.rds
+
+# Ignore files in the plots_and_table directory
+plots_and_table/
+
+# Ignore files in the manuscript directory
+manuscript/
+
+# R specific
+.Rhistory
+.RData
+.Rproj.user
+.Ruserdata
+
+# OS specific garbage
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
